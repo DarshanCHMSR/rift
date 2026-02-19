@@ -1,6 +1,6 @@
 # RIFT — Autonomous CI/CD Healing Agent
 
-> **RIFT** (**R**epair, **I**terate, **F**ix, **T**est) is a multi-agent system that automatically diagnoses failing test suites, generates code fixes, commits them to an isolated branch, and verifies the result inside a Docker sandbox — without ever touching `main`.
+> **RIFT** (**R**epair, **I**terate, **F**ix, **T**est) is a production-grade multi-agent system that automatically diagnoses failing test suites, generates code fixes using a **hybrid rule-engine + Gemini LLM** pipeline, commits them to an isolated branch, and verifies the result inside a Docker sandbox — without ever touching `main`.
 
 ---
 
@@ -8,14 +8,19 @@
 
 1. [Architecture Overview](#architecture-overview)
 2. [Multi-Agent Pipeline](#multi-agent-pipeline)
-3. [Tech Stack](#tech-stack)
-4. [Supported Bug Types](#supported-bug-types)
-5. [Environment Variables](#environment-variables)
-6. [Local Setup](#local-setup)
-7. [Docker / Production Deployment](#docker--production-deployment)
-8. [API Reference](#api-reference)
-9. [Branch & Commit Safety](#branch--commit-safety)
-10. [Known Limitations](#known-limitations)
+3. [Key Features](#key-features)
+4. [Tech Stack](#tech-stack)
+5. [Supported Bug Types](#supported-bug-types)
+6. [Environment Variables](#environment-variables)
+7. [Local Setup](#local-setup)
+8. [Docker / Production Deployment](#docker--production-deployment)
+9. [API Reference](#api-reference)
+10. [Scoring System](#scoring-system)
+11. [Security](#security)
+12. [Testing](#testing)
+13. [Observability](#observability)
+14. [Branch & Commit Safety](#branch--commit-safety)
+15. [Known Limitations](#known-limitations)
 
 ---
 
@@ -23,11 +28,11 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        RIFT System                                  │
+│                        RIFT System v2                               │
 │                                                                     │
 │  ┌──────────┐   REST    ┌─────────────────────────────────────────┐ │
 │  │ React    │ ◄───────► │  FastAPI  (backend/main.py)             │ │
-│  │ Frontend │  /run     │                                         │ │
+│  │ Frontend │  /run     │  + API key auth + rate limiting         │ │
 │  │ (Vite +  │  /results │  ┌──────────────────────────────────┐  │ │
 │  │ Zustand) │  /health  │  │        SupervisorAgent           │  │ │
 │  └──────────┘           │  │  (LangChain RunnableLambda chain) │  │ │
@@ -74,21 +79,27 @@ GitHub Repo URL
   [Clone + Branch]
       │
       ▼
-  ┌─────────────────────────────────────┐
-  │  Retry Loop  (up to MAX_RETRIES)    │
-  │                                     │
-  │  Test (Docker container) ──PASS──► push branch ──► sandbox verify
-  │          │                          │
-  │         FAIL                        │
-  │          │                          │
-  │  Parse errors                       │
-  │          │                          │
-  │  Generate fixes                     │
-  │          │                          │
-  │  Commit [AI-AGENT] + push           │
-  │          │                          │
-  │  ────────┘  (next attempt)          │
-  └─────────────────────────────────────┘
+  ┌─────────────────────────────────────────────┐
+  │  Retry Loop  (up to MAX_RETRIES, 10m cap)   │
+  │                                              │
+  │  Test (Docker sandbox) ───PASS──► push ──► sandbox verify
+  │          │                                   │
+  │         FAIL                                 │
+  │          │                                   │
+  │  Parse errors (Python/JS/TS/Assertion)       │
+  │          │                                   │
+  │  ┌──────┴──────────┐                        │
+  │  │ Rule-based fix  │  (parallel strategy)    │
+  │  │ + LLM fix agent │  (Gemini structured)    │
+  │  └──────┬──────────┘                        │
+  │         │                                    │
+  │  Commit [AI-AGENT] + interim push            │
+  │          │                                   │
+  │  ────────┘  (next attempt)                   │
+  └─────────────────────────────────────────────┘
+      │
+      ▼
+  Score  →  Workspace cleanup  →  Save to results/
 ```
 
 ---
@@ -97,13 +108,29 @@ GitHub Repo URL
 
 | Agent | Role | Key Logic |
 |---|---|---|
-| **SupervisorAgent** | Orchestrates the full pipeline via a LangChain `RunnableLambda` chain | Coordinates all sub-agents; owns the retry loop |
-| **RepoAnalyzerAgent** | Clones the repo, creates the AI_Fix branch, detects test framework | Checks for `package.json`, `pytest.ini`, `pyproject.toml`, `requirements.txt` |
-| **TestRunnerAgent** | Executes tests inside isolated Docker containers | Volume-mount mode (fast local); URL-clone mode (post-push sandbox verification) |
-| **ErrorParserAgent** | Parses raw test output into structured issue records | Regex on Python tracebacks, pytest output, flake8 codes |
-| **FixGeneratorAgent** | Applies deterministic code fixes to source files | Rule-based: indentation, syntax, import resolution, linting whitespace |
-| **CommitAgent** | Commits changes with `[AI-AGENT]` prefix; guards branch names | Uses GitPython; calls `git_service.commit_all` |
-| **CICDMonitorAgent** | Appends timestamped events to the run timeline | Provides audit trail for the frontend timeline view |
+| **SupervisorAgent** | StateGraph orchestrator — coordinates all sub-agents | LangChain `RunnableLambda` nodes; 10-min timeout; workspace cleanup |
+| **RepoAnalyzerAgent** | Clones the repo, creates the AI_Fix branch, detects test framework | Checks `package.json`, `pytest.ini`, `pyproject.toml`, `requirements.txt` |
+| **TestRunnerAgent** | Executes tests inside isolated Docker containers | Volume-mount (fast local) + URL-clone (true sandbox verification) |
+| **ErrorParserAgent** | Parses test output into structured issues with confidence scores | Python tracebacks, pytest, JS stack traces, TS compiler, assertions |
+| **FixGeneratorAgent** | Applies deterministic code fixes to source files | Indentation, syntax, import, linting — falls back to Gemini LLM |
+| **LLMFixAgent** | Structured Gemini patches with retry validation | Returns `{file, line, replacement, explanation}` JSON; auto-reverts bad patches |
+| **CommitAgent** | Commits changes with `[AI-AGENT]` prefix; guards branch names | Uses GitPython; single commit per iteration (batched fixes) |
+| **CICDMonitorAgent** | Appends timestamped events to the run timeline | Audit trail powering the frontend timeline and event log |
+
+---
+
+## Key Features
+
+- **Hybrid Fix Engine** — rule-based heuristics handle common bugs instantly; Gemini LLM repairs complex TYPE_ERROR / LOGIC / ASSERTION errors with structured JSON patches
+- **Parallel Fix Strategy** — rule engine and LLM agent run in parallel per iteration; single commit per retry batch
+- **Sandbox Verification** — post-push Docker container clones directly from GitHub (no host FS access) to confirm the fix branch is truly green
+- **Run History** — every run saved to `backend/results/run_<timestamp>.json`; browse past runs from the frontend dropdown or `GET /runs`
+- **API Security** — optional `RIFT_API_KEY` header authentication; per-IP rate limiting (5 runs/hr)
+- **10-Minute Timeout** — supervisor hard-caps each run to prevent runaway processes
+- **Workspace Cleanup** — work directories are automatically deleted after each run completes
+- **Enhanced Scoring** — base 100 + speed bonus + zero-fix bonus − commit penalty − sandbox penalty; capped 0–120
+- **Structured Logging** — JSON log output with run ID correlation; per-run log files in `backend/logs/`
+- **Progress Tracker** — animated pipeline stage indicator (Cloning → Testing → Fixing → Pushing → Verifying → Done)
 
 ---
 
@@ -112,10 +139,11 @@ GitHub Repo URL
 | Layer | Technology |
 |---|---|
 | **API** | FastAPI 0.115 + Uvicorn |
-| **Agent Orchestration** | LangChain Core (`RunnableLambda` supervisor pattern) |
+| **Agent Orchestration** | LangChain Core (`RunnableLambda` StateGraph pattern) |
+| **LLM** | Google Gemini 1.5 Flash (structured JSON patches) |
 | **Container Isolation** | Docker SDK for Python 7.1 |
 | **Git Operations** | GitPython 3.1 |
-| **Frontend** | React 18 + Vite 6 + Zustand + Recharts + Tailwind CSS |
+| **Frontend** | React 18 + Vite 6 + Zustand 5 + Recharts + Tailwind CSS |
 | **Containerisation** | Docker + Docker Compose v3.9 |
 | **Python** | 3.11 |
 | **Node** | 20 (sandbox containers) |
@@ -126,12 +154,14 @@ GitHub Repo URL
 
 | Type | Detection | Fix Strategy |
 |---|---|---|
-| `INDENTATION` | `IndentationError`, `TabError` | Re-indent file with `autopep8`-style rules |
-| `SYNTAX` | `SyntaxError`, `expected ':'` | Remove stray characters; fix missing colons |
-| `IMPORT` | `ImportError`, `ModuleNotFoundError` | Add missing `pip install` to `requirements.txt`; stub missing local module |
-| `LINTING` | Flake8 `F401`, `E302`, trailing whitespace | Remove unused imports; add blank lines; strip trailing spaces |
-| `TYPE_ERROR` | `TypeError` in traceback | Detected; fix generation currently rule-limited (LLM extension point) |
-| `LOGIC` | All other tracebacks | Recorded in timeline; manual review recommended |
+| `INDENTATION` | `IndentationError`, `TabError` | Replace tabs with spaces |
+| `SYNTAX` | `SyntaxError`, `expected ':'` | Add missing colons |
+| `IMPORT` | `ImportError`, `ModuleNotFoundError` | Disable import or create stub module |
+| `LINTING` | Flake8 `F401`, `E302`, trailing whitespace | Remove unused imports; strip whitespace |
+| `TYPE_ERROR` | `TypeError` in traceback | Gemini LLM structured repair |
+| `LOGIC` | All other tracebacks | Gemini LLM structured repair |
+| `ASSERTION` | `AssertionError`, `assert` failures | Gemini LLM structured repair |
+| `REFERENCE` | `ReferenceError`, `is not defined` (JS) | Gemini LLM structured repair |
 
 ---
 
@@ -140,8 +170,9 @@ GitHub Repo URL
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GITHUB_TOKEN` | ✅ | — | PAT with `repo` + `workflow` scopes |
-| `OPENAI_API_KEY` | ✅ | — | OpenAI key (used by FixGeneratorAgent LLM path) |
-| `MAX_RETRIES` | ❌ | `5` | Fix-retry attempts per run (clamped 1–50) |
+| `GEMINI_API_KEY` | ✅ | — | Google Gemini key — powers LLM repair |
+| `MAX_RETRIES` | ❌ | `5` | Fix-retry attempts per run (1–50) |
+| `RIFT_API_KEY` | ❌ | — | When set, all non-health endpoints require `X-RIFT-KEY` header |
 
 Copy `.env.example` → `.env` and fill in your values.
 
@@ -160,18 +191,14 @@ Copy `.env.example` → `.env` and fill in your values.
 ```bash
 cd backend
 python -m venv myenv
-
-# Windows
-myenv\Scripts\activate
-
-# macOS/Linux
-source myenv/bin/activate
+myenv\Scripts\activate          # Windows
+# source myenv/bin/activate     # macOS/Linux
 
 pip install -r requirements.txt
 
 # Set secrets
-cp ..\\.env.example ..\\.env
-# Edit .env and add GITHUB_TOKEN + OPENAI_API_KEY
+cp ..\.env.example ..\.env
+# Edit .env → add GITHUB_TOKEN + GEMINI_API_KEY
 
 # Start the API (from repo root)
 cd ..
@@ -198,59 +225,24 @@ curl -X POST http://localhost:8000/run \
   }'
 ```
 
-Results are persisted to `backend/results.json` and served at `GET /results`.
-
 ---
 
 ## Docker / Production Deployment
 
-### Quick start (recommended)
-
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/rift.git
-cd rift
-
-# 2. Configure secrets
-cp .env.example .env
-# Open .env in your editor and set GITHUB_TOKEN and OPENAI_API_KEY
-
-# 3. Build and start all services
-docker compose up --build
-
-# Backend → http://localhost:8000
-# Frontend → http://localhost:3000
+cp .env.example .env          # configure secrets
+docker compose up --build     # Backend → :8000 / Frontend → :3000
 ```
-
-### Services
 
 | Service | Port | Description |
 |---|---|---|
 | `rift_backend` | 8000 | FastAPI agent orchestrator |
 | `rift_frontend` | 3000 | React SPA (nginx) |
 
-### Stopping
-
 ```bash
-docker compose down          # stop and remove containers
-docker compose down -v       # also remove the workspace volume
+docker compose down            # stop containers
+docker compose down -v         # also remove workspace volume
 ```
-
-### Scaling workers
-
-```bash
-docker compose up --build --scale backend=2
-```
-
-### Environment secrets in CI/CD
-
-Set `GITHUB_TOKEN`, `OPENAI_API_KEY`, and optionally `MAX_RETRIES` as repository secrets (GitHub Actions, GitLab CI, etc.) and pass them to `docker compose` via `--env-file` or `-e` flags. **Never hard-code them in the image.**
-
-### Production notes
-
-- The backend container mounts `/var/run/docker.sock` so it can spawn sandbox child containers. Restrict access accordingly in production.
-- All sandbox containers are automatically destroyed after each test run.
-- The `workspace_data` Docker volume persists run workspaces across restarts; prune it periodically with `docker volume prune`.
 
 ---
 
@@ -258,9 +250,7 @@ Set `GITHUB_TOKEN`, `OPENAI_API_KEY`, and optionally `MAX_RETRIES` as repository
 
 ### `POST /run` · `POST /execute`
 
-Trigger a full agent run.
-
-**Request body:**
+Trigger a full healing run.
 
 ```json
 {
@@ -271,37 +261,78 @@ Trigger a full agent run.
 }
 ```
 
-**Response (200):**
+**Response:**
 
 ```json
 {
-  "repo_url":          "https://github.com/org/repo",
-  "team_name":         "AlphaTeam",
-  "leader_name":       "Alice",
-  "branch_name":       "ALPHATEAM_ALICE_AI_Fix",
-  "total_failures":    2,
-  "total_fixes":       3,
-  "final_status":      "PASSED",
-  "time_taken":        47.3,
-  "score":             110,
-  "fixes":             ["LINTING error in src/utils.py line 12 -> Fix: removed unused import"],
-  "sandbox_verification": {
-    "exit_code": 0,
-    "duration":  12.1,
-    "passed":    true,
-    "branch":    "ALPHATEAM_ALICE_AI_Fix"
-  },
-  "cicd timeline":     [...]
+  "repo_url":            "…",
+  "branch_name":         "ALPHATEAM_ALICE_AI_Fix",
+  "total_failures":      2,
+  "total_fixes":         3,
+  "final_status":        "PASSED",
+  "time_taken":          47.3,
+  "score":               110,
+  "score_breakdown":     { "base": 100, "speed_bonus": 10, … },
+  "fixes":               ["LINTING error in src/utils.py line 12 → Fix: removed unused import"],
+  "sandbox_verification": { "exit_code": 0, "passed": true },
+  "cicd timeline":       [{ "timestamp": "…", "stage": "…", "status": "…" }]
 }
 ```
 
-### `GET /results`
+### `GET /results` — Latest run result
 
-Returns the most recent run result from `results.json`.
+### `GET /runs` — List all historical runs (newest first)
 
-### `GET /health`
+### `GET /runs/{run_id}` — Fetch a specific past run
 
-Returns `{"status": "ok"}`. Used by Docker health checks.
+### `GET /health` — Health check (Gemini status, token status, API key requirement)
+
+---
+
+## Scoring System
+
+| Component | Points | Condition |
+|---|---|---|
+| Base score | 100 | Always |
+| Speed bonus | +10 | Total time < 300s |
+| Zero-fix bonus | +5 | No fixes needed & sandbox didn't fail |
+| Commit penalty | −2 × (commits − 20) | If > 20 commits |
+| Sandbox penalty | −20 | Sandbox verification failed |
+| **Cap** | **0 – 120** | Floor at 0, ceiling at 120 |
+
+---
+
+## Security
+
+- **API Key** — set `RIFT_API_KEY` env var; all non-health endpoints require `X-RIFT-KEY` header
+- **Rate Limiting** — 5 runs per hour per IP address (in-memory)
+- **10-Min Timeout** — supervisor kills the pipeline if it exceeds 600 seconds
+- **Branch Guards** — never pushes to `main`/`master`; branch must match `[A-Z0-9_]+_AI_Fix`
+- **Docker Sandbox** — `cap_drop=ALL`, `no-new-privileges`, 1 GB RAM, 1 vCPU, auto-destroy
+
+---
+
+## Testing
+
+```bash
+# From repo root
+pip install pytest
+pytest tests/ -v
+```
+
+Test suite covers:
+- `test_error_parser.py` — Python/JS/TS parsing, classification, confidence scores
+- `test_scoring_service.py` — Base, bonuses, penalties, cap enforcement
+- `test_git_service.py` — Branch validation, protected branch blocks, URL auth injection
+
+---
+
+## Observability
+
+- **Structured JSON logs** — every log line is JSON with `ts`, `level`, `logger`, `msg`, optional `run_id`
+- **Per-run log files** — saved to `backend/logs/<run_id>.log`
+- **Timeline events** — full audit trail in response `"cicd timeline"` array
+- **Event log modal** — click "View Event Log" in the frontend to inspect all pipeline events
 
 ---
 
@@ -309,11 +340,11 @@ Returns `{"status": "ok"}`. Used by Docker health checks.
 
 | Rule | Enforcement |
 |---|---|
-| Never push to `main` or `master` | `GitService.push_branch` hard-blocks pushes to protected names |
+| Never push to `main` or `master` | `GitService.push_branch` hard-blocks protected names |
 | Branch must end with `_AI_Fix` | Validated by regex before every push |
-| Branch name format | `{TEAM}_{LEADER}_AI_Fix` — uppercase alphanumeric + underscores only |
-| All commits prefixed `[AI-AGENT]` | `GitService.commit_all` prepends the prefix if absent |
-| Sandbox containers | `cap_drop=ALL`, `security_opt=no-new-privileges`, 1 GB RAM, 1 vCPU |
+| Branch format | `{TEAM}_{LEADER}_AI_Fix` — uppercase alphanumeric + underscores |
+| All commits prefixed `[AI-AGENT]` | `GitService.commit_all` prepends if absent |
+| Sandbox isolation | `cap_drop=ALL`, `no-new-privileges`, 1 GB RAM, 1 vCPU |
 
 ---
 
@@ -321,10 +352,11 @@ Returns `{"status": "ok"}`. Used by Docker health checks.
 
 | Area | Limitation |
 |---|---|
-| **Fix quality** | FixGeneratorAgent is currently rule-based. Complex logic bugs (off-by-one, algorithmic errors) are detected but not fixed. An LLM-assisted fix path is stubbed and ready for extension. |
-| **Test frameworks** | Supports `pytest`, `unittest` (Python), and `npm test` (Node). Maven, Gradle, Go, Rust are not yet supported. |
-| **Docker-in-Docker** | Production deployment requires the Docker socket to be shared. In hardened environments (Kubernetes), replace with Kaniko or a remote Docker daemon. |
+| **Fix quality** | Complex algorithmic bugs may require manual review even with Gemini |
+| **Test frameworks** | `pytest`, `unittest`, `npm test` only. Maven/Go/Rust not yet supported |
+| **Docker-in-Docker** | Docker socket sharing required. In Kubernetes, use Kaniko or remote daemon |
+| **Rate limiting** | In-memory only — resets on restart. Use Redis for multi-instance deployments |
 | **Concurrent runs** | Each run creates a unique workspace directory; no distributed locking. Running many concurrent jobs may exhaust disk space or Docker resources. |
-| **LLM dependency** | `OPENAI_API_KEY` is required even when the rule-based fixer handles all errors. The LLM call path can be disabled by removing the import without breaking core functionality. |
+| **LLM dependency** | `GEMINI_API_KEY` is required for TYPE_ERROR and LOGIC bug fixes. Rule-based fixes (LINTING, SYNTAX, INDENTATION, IMPORT) work without it. |
 | **Private repos** | Only GitHub HTTPS URLs with a PAT are supported. SSH URLs and GitLab/Bitbucket require minor changes to `GitService._auth_repo_url`. |
 | **Windows host** | Volume mounts in `docker_service.py` use POSIX paths. On Windows, Docker Desktop translates paths automatically; WSL2 backend is recommended. |

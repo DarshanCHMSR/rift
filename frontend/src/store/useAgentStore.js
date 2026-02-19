@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+// Empty string = relative paths, routed through the Vite dev proxy to port 8000.
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 const initialForm = {
   repo_url: "",
@@ -27,7 +28,7 @@ const parseFixLine = (entry, index, finalStatus) => {
   }
 
   if (typeof entry === "string") {
-    const re = /^([A-Z_]+) error in (.+?) line (\d+) -> Fix: (.+)$/;
+    const re = /^([A-Z_]+) error in (.+?) line (\d+) → Fix: (.+)$/;
     const match = entry.match(re);
     if (match) {
       return {
@@ -72,29 +73,53 @@ const normalizeTimeline = (timeline = [], retryLimit = 5) => {
 
     if (attemptNum > 0 && attemptMap.has(attemptNum)) {
       const row = attemptMap.get(attemptNum);
-      if (statusText === "tests_passed") {
-        row.result = "PASSED";
-      }
-      if (statusText === "no_fixes_applied" || statusText === "no_parseable_errors") {
+      if (statusText === "tests_passed") row.result = "PASSED";
+      if (statusText === "no_fixes_applied" || statusText === "no_parseable_errors")
         row.result = "FAILED";
-      }
-      if (statusText === "retry_scheduled") {
+      if (statusText === "retry_scheduled")
         row.result = row.result === "RUNNING" ? "FAILED" : row.result;
-      }
     }
   });
 
   return [...attemptMap.values()].sort((a, b) => a.iteration - b.iteration);
 };
 
+/** Derive progress stage from the latest timeline entries. */
+const deriveProgress = (timeline = []) => {
+  const stages = ["Cloning", "Testing", "Fixing", "Pushing", "Verifying", "Done"];
+  const stageMap = {
+    repo_ready: "Testing",
+    tests_executed: "Fixing",
+    fixes_applied: "Pushing",
+    patches_generated: "Pushing",
+    branch_pushed: "Verifying",
+    sandbox_verification: "Done",
+    finished: "Done",
+    timeout: "Done",
+  };
+  let current = "Cloning";
+  for (const ev of timeline) {
+    const mapped = stageMap[ev?.status];
+    if (mapped && stages.indexOf(mapped) > stages.indexOf(current)) {
+      current = mapped;
+    }
+  }
+  return { stages, current, index: stages.indexOf(current) };
+};
+
 const normalizeResult = (raw, retryLimit) => {
   const finalStatus = raw?.final_status ?? "FAILED";
   const fixes = Array.isArray(raw?.fixes) ? raw.fixes : [];
   const timeline = Array.isArray(raw?.["cicd timeline"]) ? raw["cicd timeline"] : [];
-  const commitsOver20 = Math.max(0, fixes.length - 20);
-  const speedBonus = safeNumber(raw?.time_taken, 0) < 300 ? 10 : 0;
-  const efficiencyPenalty = commitsOver20 * 2;
-  const finalScore = safeNumber(raw?.score, 0);
+
+  // Use backend score_breakdown if available; fall back to local calc
+  const bd = raw?.score_breakdown ?? {};
+  const base = safeNumber(bd.base, 100);
+  const speedBonus = safeNumber(bd.speed_bonus, raw?.time_taken < 300 ? 10 : 0);
+  const commitPenalty = safeNumber(bd.commit_penalty, Math.max(0, fixes.length - 20) * 2);
+  const sandboxPenalty = safeNumber(bd.sandbox_penalty, 0);
+  const zeroFixBonus = safeNumber(bd.zero_fix_bonus, 0);
+  const finalScore = safeNumber(bd.final ?? raw?.score, 0);
 
   return {
     repo_url: raw?.repo_url ?? "",
@@ -107,13 +132,18 @@ const normalizeResult = (raw, retryLimit) => {
     time_taken: safeNumber(raw?.time_taken, 0),
     score: finalScore,
     scoreBreakdown: {
-      base: 100,
+      base,
       speedBonus,
-      efficiencyPenalty,
+      commitPenalty,
+      sandboxPenalty,
+      zeroFixBonus,
       final: finalScore,
     },
     fixesRows: fixes.map((entry, index) => parseFixLine(entry, index, finalStatus)),
     timelineRows: normalizeTimeline(timeline, retryLimit),
+    progress: deriveProgress(timeline),
+    sandbox: raw?.sandbox_verification ?? {},
+    rawTimeline: timeline,
   };
 };
 
@@ -122,13 +152,18 @@ export const useAgentStore = create((set, get) => ({
   loading: false,
   error: "",
   results: null,
+  runHistory: [],
+  showErrorLog: false,
+  errorLog: "",
 
   setFormField: (field, value) =>
     set((state) => ({ form: { ...state.form, [field]: value } })),
 
+  toggleErrorLog: () => set((s) => ({ showErrorLog: !s.showErrorLog })),
+
   runAgent: async () => {
     const { form } = get();
-    set({ loading: true, error: "" });
+    set({ loading: true, error: "", errorLog: "" });
 
     try {
       const postResponse = await fetch(`${API_BASE}/run`, {
@@ -156,6 +191,9 @@ export const useAgentStore = create((set, get) => ({
         results: normalizeResult(getData, safeNumber(form.retry_limit, 5)),
         loading: false,
       });
+
+      // Refresh run history
+      get().loadRunHistory();
     } catch (error) {
       set({
         loading: false,
@@ -167,14 +205,35 @@ export const useAgentStore = create((set, get) => ({
   loadLatestResults: async () => {
     try {
       const res = await fetch(`${API_BASE}/results`);
-      if (!res.ok) {
-        return;
-      }
+      if (!res.ok) return;
       const data = await res.json();
       const retryLimit = safeNumber(get().form.retry_limit, 5);
       set({ results: normalizeResult(data, retryLimit) });
     } catch {
       // Intentionally ignore cold-start errors for initial page load.
+    }
+  },
+
+  loadRunHistory: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/runs`);
+      if (!res.ok) return;
+      const data = await res.json();
+      set({ runHistory: Array.isArray(data) ? data : [] });
+    } catch {
+      // ignore
+    }
+  },
+
+  loadRun: async (runId) => {
+    try {
+      const res = await fetch(`${API_BASE}/runs/${runId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const retryLimit = safeNumber(get().form.retry_limit, 5);
+      set({ results: normalizeResult(data, retryLimit) });
+    } catch {
+      // ignore
     }
   },
 }));

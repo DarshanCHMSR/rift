@@ -1,15 +1,19 @@
 import { Suspense, lazy, useEffect } from "react";
 import InputSection from "./components/InputSection";
 import RunSummaryCard from "./components/RunSummaryCard";
+import RunHistoryDropdown from "./components/RunHistoryDropdown";
+import ErrorLogModal from "./components/ErrorLogModal";
 import { useAgentStore } from "./store/useAgentStore";
 
 const ScoreBreakdownPanel = lazy(() => import("./components/ScoreBreakdownPanel"));
 const CICDTimeline = lazy(() => import("./components/CICDTimeline"));
 const FixesAppliedTable = lazy(() => import("./components/FixesAppliedTable"));
+const ProgressTracker = lazy(() => import("./components/ProgressTracker"));
 
 const App = () => {
   const results = useAgentStore((state) => state.results);
   const loadLatestResults = useAgentStore((state) => state.loadLatestResults);
+  const toggleErrorLog = useAgentStore((state) => state.toggleErrorLog);
 
   useEffect(() => {
     loadLatestResults();
@@ -23,8 +27,22 @@ const App = () => {
       </div>
 
       <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-6">
+        {/* Top bar: history dropdown + event log button */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <RunHistoryDropdown />
+          {results && (
+            <button
+              onClick={toggleErrorLog}
+              className="rounded-lg border border-slate-600/40 bg-slate-800/60 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-slate-700/60"
+            >
+              View Event Log
+            </button>
+          )}
+        </div>
+
         <InputSection />
         <RunSummaryCard results={results} />
+
         <Suspense
           fallback={
             <div className="glass-panel rounded-2xl border border-slate-700/60 p-6 text-sm text-slate-300">
@@ -32,6 +50,7 @@ const App = () => {
             </div>
           }
         >
+          <ProgressTracker results={results} />
           <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
             <ScoreBreakdownPanel results={results} />
             <CICDTimeline results={results} />
@@ -39,6 +58,8 @@ const App = () => {
           <FixesAppliedTable results={results} />
         </Suspense>
       </div>
+
+      <ErrorLogModal />
     </main>
   );
 };

@@ -14,12 +14,14 @@ const ScoreBreakdownPanel = ({ results }) => {
     return null;
   }
 
-  const breakdown = results.scoreBreakdown;
+  const b = results.scoreBreakdown;
   const chartData = [
-    { name: "Base", value: breakdown.base, color: "#38bdf8" },
-    { name: "Speed +", value: breakdown.speedBonus, color: "#22c55e" },
-    { name: "Penalty -", value: -breakdown.efficiencyPenalty, color: "#f43f5e" },
-    { name: "Final", value: breakdown.final, color: "#fbbf24" },
+    { name: "Base", value: b.base, color: "#38bdf8" },
+    { name: "Speed +", value: b.speedBonus, color: "#22c55e" },
+    { name: "0-Fix +", value: b.zeroFixBonus, color: "#a3e635" },
+    { name: "Commit -", value: -b.commitPenalty, color: "#f43f5e" },
+    { name: "Sandbox -", value: -b.sandboxPenalty, color: "#fb923c" },
+    { name: "Final", value: b.final, color: "#fbbf24" },
   ];
 
   return (
@@ -31,26 +33,34 @@ const ScoreBreakdownPanel = ({ results }) => {
         </div>
         <div className="rounded-xl border border-amber-300/40 bg-amber-300/10 px-4 py-2">
           <p className="text-xs uppercase tracking-wide text-amber-200/80">Final Score</p>
-          <p className="text-3xl font-bold text-amber-200">{breakdown.final}</p>
+          <p className="text-3xl font-bold text-amber-200">{b.final}</p>
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+      <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3">
         <div className="metric-tile">
           <p className="text-sm text-slate-300">Base score</p>
-          <p className="mt-1 font-mono text-lg text-sky-300">100</p>
+          <p className="mt-1 font-mono text-lg text-sky-300">{b.base}</p>
         </div>
         <div className="metric-tile">
           <p className="text-sm text-slate-300">Speed bonus</p>
-          <p className="mt-1 font-mono text-lg text-emerald-300">+{breakdown.speedBonus}</p>
+          <p className="mt-1 font-mono text-lg text-emerald-300">+{b.speedBonus}</p>
         </div>
         <div className="metric-tile">
-          <p className="text-sm text-slate-300">Efficiency penalty</p>
-          <p className="mt-1 font-mono text-lg text-rose-300">-{breakdown.efficiencyPenalty}</p>
+          <p className="text-sm text-slate-300">Zero-fix bonus</p>
+          <p className="mt-1 font-mono text-lg text-lime-300">+{b.zeroFixBonus}</p>
+        </div>
+        <div className="metric-tile">
+          <p className="text-sm text-slate-300">Commit penalty</p>
+          <p className="mt-1 font-mono text-lg text-rose-300">-{b.commitPenalty}</p>
+        </div>
+        <div className="metric-tile">
+          <p className="text-sm text-slate-300">Sandbox penalty</p>
+          <p className="mt-1 font-mono text-lg text-orange-300">-{b.sandboxPenalty}</p>
         </div>
         <div className="metric-tile">
           <p className="text-sm text-slate-300">Formula</p>
-          <p className="mt-1 font-mono text-xs text-slate-200">100 + speed bonus - commit penalty</p>
+          <p className="mt-1 font-mono text-xs text-slate-200">base + speed + 0fix − commit − sandbox (cap 0–120)</p>
         </div>
       </div>
 

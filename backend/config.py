@@ -15,14 +15,18 @@ def _clamp_retry(value: str | None, default: int = 5) -> int:
 @dataclass(frozen=True)
 class Settings:
     github_token: str
-    openai_api_key: str
+    gemini_api_key: str
     max_retries: int
+    rift_api_key: str = ""
+    # Legacy field kept for backward compatibility with any existing callers.
+    openai_api_key: str = ""
 
 
 def get_settings() -> Settings:
     return Settings(
         github_token=os.getenv("GITHUB_TOKEN", "").strip(),
-        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
         max_retries=_clamp_retry(os.getenv("MAX_RETRIES"), default=5),
+        rift_api_key=os.getenv("RIFT_API_KEY", "").strip(),
     )
 

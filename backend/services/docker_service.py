@@ -74,7 +74,7 @@ class DockerService:
                 volumes={
                     str(repo_path.resolve()): {"bind": "/seed/repo", "mode": "ro"}
                 },
-                environment={"OPENAI_API_KEY": get_settings().openai_api_key},
+                environment={"GEMINI_API_KEY": get_settings().gemini_api_key},
             )
             result = container.wait(timeout=timeout)
             logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
@@ -151,7 +151,7 @@ class DockerService:
                 command=command,
                 volumes={},  # No host filesystem access
                 environment={
-                    "OPENAI_API_KEY": settings.openai_api_key,
+                    "GEMINI_API_KEY": settings.gemini_api_key,
                     "GIT_TERMINAL_PROMPT": "0",  # Prevent interactive prompts
                 },
             )

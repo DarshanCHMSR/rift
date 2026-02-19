@@ -30,7 +30,7 @@ services:
     environment:
       # Required — must be set in .env (or in CI secrets)
       GITHUB_TOKEN: ${GITHUB_TOKEN}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
       # Optional — default is 5; clamp 1-50
       MAX_RETRIES: ${MAX_RETRIES:-5}
     env_file:

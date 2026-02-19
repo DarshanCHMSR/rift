@@ -5,11 +5,15 @@ from pathlib import Path
 from typing import Any
 
 from backend.agents.cicd_monitor import CICDMonitorAgent
+from backend.services.gemini_service import build_gemini_service
 
 
 class FixGeneratorAgent:
     def __init__(self) -> None:
         self.monitor = CICDMonitorAgent()
+        # GeminiService is constructed lazily so the agent can be instantiated
+        # even before the API key is confirmed valid.
+        self._gemini = build_gemini_service()
 
     def run(
         self,
@@ -18,6 +22,7 @@ class FixGeneratorAgent:
         timeline: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         fixes: list[dict[str, Any]] = []
+        gemini_calls = 0
 
         for issue in issues:
             bug_type = issue.get("error_type", "LOGIC")
@@ -33,6 +38,16 @@ class FixGeneratorAgent:
                 description = self._fix_indentation(file_path)
             elif bug_type == "IMPORT":
                 description = self._fix_import(repo_path, file_path, line_no, message)
+            elif bug_type in ("TYPE_ERROR", "LOGIC") and file_path:
+                # ── Gemini LLM repair path ─────────────────────────────────
+                description = self._gemini.repair_file(
+                    file_path=file_path,
+                    line_no=line_no,
+                    error_type=bug_type,
+                    error_message=message,
+                )
+                if description:
+                    gemini_calls += 1
             else:
                 description = None
 
@@ -41,7 +56,7 @@ class FixGeneratorAgent:
 
             path_text = self._display_path(repo_path, file_path)
             summary = (
-                f"{bug_type} error in {path_text} line {line_no} -> Fix: {description}"
+                f"{bug_type} error in {path_text} line {line_no} → Fix: {description}"
             )
             fixes.append(
                 {
@@ -57,7 +72,11 @@ class FixGeneratorAgent:
             timeline,
             "fix_generator",
             "fixes_applied",
-            {"count": len(fixes)},
+            {
+                "count": len(fixes),
+                "gemini_calls": gemini_calls,
+                "gemini_available": self._gemini.available,
+            },
         )
         return fixes
 
