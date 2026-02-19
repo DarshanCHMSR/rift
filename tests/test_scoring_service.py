@@ -12,21 +12,24 @@ svc = ScoringService()
 
 
 def test_base_score():
-    result = svc.calculate_score(elapsed_seconds=400, commit_count=5)
+    result = svc.calculate_score(elapsed_seconds=400, commit_count=5, total_fixes=1)
     assert result["base"] == 100
     assert result["speed_bonus"] == 0
+    assert result["zero_fix_bonus"] == 0
     assert result["final"] == 100
 
 
 def test_speed_bonus():
-    result = svc.calculate_score(elapsed_seconds=200, commit_count=5)
+    result = svc.calculate_score(elapsed_seconds=200, commit_count=5, total_fixes=1)
     assert result["speed_bonus"] == 10
+    assert result["zero_fix_bonus"] == 0
     assert result["final"] == 110
 
 
 def test_commit_penalty():
-    result = svc.calculate_score(elapsed_seconds=400, commit_count=25)
+    result = svc.calculate_score(elapsed_seconds=400, commit_count=25, total_fixes=1)
     assert result["commit_penalty"] == 10
+    assert result["zero_fix_bonus"] == 0
     assert result["final"] == 90
 
 

@@ -40,7 +40,7 @@ class ErrorParserAgent:
         pytest_re = re.compile(r"^(.+?):(\d+):\s*(.+)$")
         js_stack_re = re.compile(r"at\s+.+?\s+\((.+?):(\d+):\d+\)")
         ts_error_re = re.compile(r"^(.+?)\((\d+),\d+\):\s*error\s+TS\d+:\s*(.+)$")
-        assertion_re = re.compile(r"AssertionError|AssertionError|assert\s+.+==.+", re.IGNORECASE)
+        assertion_re = re.compile(r"AssertionError|assert\s+.+==.+", re.IGNORECASE)
 
         seen: set[tuple[str, int]] = set()
 

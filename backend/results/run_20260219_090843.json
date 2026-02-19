@@ -1,0 +1,114 @@
+{
+  "repo_url": "https://github.com/DarshanCHMSR/rift",
+  "team_name": "test",
+  "leader_name": "test",
+  "branch_name": "TEST_TEST_AI_Fix",
+  "total_failures": 1,
+  "total_fixes": 0,
+  "final_status": "FAILED",
+  "time_taken": 86.86,
+  "score": 115,
+  "score_breakdown": {
+    "base": 100,
+    "speed_bonus": 10,
+    "commit_penalty": 0,
+    "sandbox_penalty": 0,
+    "zero_fix_bonus": 5,
+    "final": 115
+  },
+  "fixes": [],
+  "sandbox_verification": {
+    "skipped": true,
+    "reason": "Push successful"
+  },
+  "cicd timeline": [
+    {
+      "timestamp": "2026-02-19T09:07:16.331767+00:00",
+      "stage": "supervisor",
+      "status": "started",
+      "details": {
+        "run_id": "4809bd4e"
+      }
+    },
+    {
+      "timestamp": "2026-02-19T09:07:19.821754+00:00",
+      "stage": "repo_analyzer",
+      "status": "repo_ready",
+      "details": {
+        "repo_path": "C:\\Users\\Darsh\\OneDrive\\Desktop\\Projects\\rift\\backend\\.workspace\\4809bd4e\\repo",
+        "test_framework": "pytest"
+      }
+    },
+    {
+      "timestamp": "2026-02-19T09:07:19.821754+00:00",
+      "stage": "cicd",
+      "status": "attempt_started",
+      "details": {
+        "attempt": 1
+      }
+    },
+    {
+      "timestamp": "2026-02-19T09:07:19.823696+00:00",
+      "stage": "test_runner",
+      "status": "tests_executed",
+      "details": {
+        "framework": "pytest",
+        "exit_code": 1,
+        "duration": 0.0,
+        "sandbox_mode": "volume_mount"
+      }
+    },
+    {
+      "timestamp": "2026-02-19T09:07:19.848093+00:00",
+      "stage": "error_parser",
+      "status": "errors_parsed",
+      "details": {
+        "count": 1
+      }
+    },
+    {
+      "timestamp": "2026-02-19T09:07:19.856330+00:00",
+      "stage": "fix_generator",
+      "status": "fixes_applied",
+      "details": {
+        "count": 0,
+        "gemini_calls": 0,
+        "gemini_available": true
+      }
+    },
+    {
+      "timestamp": "2026-02-19T09:07:19.856330+00:00",
+      "stage": "llm_fix_agent",
+      "status": "patches_generated",
+      "details": {
+        "count": 0,
+        "attempted": 1
+      }
+    },
+    {
+      "timestamp": "2026-02-19T09:07:19.856330+00:00",
+      "stage": "cicd",
+      "status": "no_fixes_applied",
+      "details": {
+        "attempt": 1
+      }
+    },
+    {
+      "timestamp": "2026-02-19T09:08:43.102273+00:00",
+      "stage": "git",
+      "status": "branch_pushed",
+      "details": {
+        "branch_name": "TEST_TEST_AI_Fix",
+        "result": "Push successful"
+      }
+    },
+    {
+      "timestamp": "2026-02-19T09:08:43.102273+00:00",
+      "stage": "supervisor",
+      "status": "finished",
+      "details": {
+        "final_status": "FAILED"
+      }
+    }
+  ]
+}
