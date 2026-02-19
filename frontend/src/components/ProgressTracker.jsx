@@ -1,20 +1,24 @@
-import { useAgentStore } from "../store/useAgentStore";
+import { useAgentStore, estimateRunSeconds } from "../store/useAgentStore";
 
 const STAGE_LIST = ["Cloning", "Testing", "Fixing", "Pushing", "Verifying", "Done"];
 
-// Map elapsed seconds → active stage index while a run is in progress
-const ELAPSED_STAGE_MAP = [
-  { after: 0,   index: 0 }, // Cloning
-  { after: 20,  index: 1 }, // Testing
-  { after: 80,  index: 2 }, // Fixing
-  { after: 180, index: 3 }, // Pushing
-  { after: 260, index: 4 }, // Verifying
-  { after: 480, index: 5 }, // Done
-];
+// Build stage-index thresholds dynamically based on estimated total seconds.
+// Each element: { after: seconds, index: stageIndex }
+const buildElapsedMap = (retryLimit) => {
+  const est = estimateRunSeconds(retryLimit);
+  return [
+    { after: 0,                       index: 0 }, // Cloning
+    { after: 20,                      index: 1 }, // Testing
+    { after: Math.round(est * 0.33),  index: 2 }, // Fixing
+    { after: Math.round(est * 0.70),  index: 3 }, // Pushing
+    { after: Math.round(est * 0.83),  index: 4 }, // Verifying
+    { after: Math.round(est * 0.97),  index: 5 }, // Done
+  ];
+};
 
-const stageFromElapsed = (elapsed) => {
+const stageFromElapsed = (map, elapsed) => {
   let idx = 0;
-  for (const s of ELAPSED_STAGE_MAP) {
+  for (const s of map) {
     if (elapsed >= s.after) idx = s.index;
   }
   return idx;
@@ -23,10 +27,12 @@ const stageFromElapsed = (elapsed) => {
 const ProgressTracker = ({ results }) => {
   const loading = useAgentStore((s) => s.loading);
   const elapsedSeconds = useAgentStore((s) => s.elapsedSeconds);
+  const retryLimit = useAgentStore((s) => s.form.retry_limit);
+  const elapsedMap = buildElapsedMap(retryLimit);
 
-  // While loading, derive stage from elapsed time
+  // While loading, derive stage from elapsed time (dynamic per retry_limit)
   if (loading) {
-    const activeIdx = stageFromElapsed(elapsedSeconds);
+    const activeIdx = stageFromElapsed(elapsedMap, elapsedSeconds);
     return (
       <section className="glass-panel animate-riseIn rounded-2xl p-6 shadow-glow">
         <p className="section-title">Pipeline Progress</p>

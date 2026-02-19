@@ -10,6 +10,7 @@ const InputSection = () => {
   const form = useAgentStore((state) => state.form);
   const loading = useAgentStore((state) => state.loading);
   const elapsedSeconds = useAgentStore((state) => state.elapsedSeconds);
+  const estimatedTotalSeconds = useAgentStore((state) => state.estimatedTotalSeconds);
   const loadingStage = useAgentStore((state) => state.loadingStage);
   const setFormField = useAgentStore((state) => state.setFormField);
   const runAgent = useAgentStore((state) => state.runAgent);
@@ -131,7 +132,7 @@ const InputSection = () => {
           <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-cyan-900/40">
             <div
               className="h-full rounded-full bg-cyan-400/60 transition-all duration-1000"
-              style={{ width: `${Math.min(100, (elapsedSeconds / 600) * 100)}%` }}
+              style={{ width: `${Math.min(100, (elapsedSeconds / Math.max(1, estimatedTotalSeconds)) * 100)}%` }}
             />
           </div>
         </div>

@@ -150,40 +150,102 @@ const normalizeResult = (raw, retryLimit) => {
 // Module-level refs for non-reactive artefacts
 let _timerInterval = null;
 let _abortController = null;
-const RUN_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+const RUN_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes hard cap
 
-// Pipeline stage messages shown while loading
-const LOADING_STAGES = [
-  { after: 0,   label: "Connecting to backend…" },
-  { after: 5,   label: "Cloning repository into workspace…" },
-  { after: 20,  label: "Detecting test framework…" },
-  { after: 30,  label: "Spinning up Docker sandbox…" },
-  { after: 50,  label: "Running test suite inside container…" },
-  { after: 90,  label: "Parsing errors and generating fixes…" },
-  { after: 150, label: "Applying fixes and committing changes…" },
-  { after: 240, label: "Pushing branch to GitHub…" },
-  { after: 300, label: "Running sandbox verification…" },
-  { after: 480, label: "Scoring and cleaning up…" },
-];
+// ── Dynamic timing helpers ────────────────────────────────────────────────────
+// Estimate total run seconds based on retry_limit.
+// Base: ~60s (connect + clone + first Docker pull + first test)
+// Per retry cycle: ~90s (test run + parse + fix + commit + push)
+export const estimateRunSeconds = (retryLimit) =>
+  Math.max(90, 60 + Math.round(safeNumber(retryLimit, 5)) * 90);
 
-const getLoadingStage = (elapsed) => {
-  let label = LOADING_STAGES[0].label;
-  for (const s of LOADING_STAGES) {
+// Build stage-label thresholds scaled to the estimated total time.
+export const buildLoadingStages = (retryLimit) => {
+  const est = estimateRunSeconds(retryLimit);
+  return [
+    { after: 0,                       label: "Connecting to backend…" },
+    { after: 5,                       label: "Cloning repository into workspace…" },
+    { after: 20,                      label: "Detecting test framework…" },
+    { after: 30,                      label: "Spinning up Docker sandbox…" },
+    { after: 50,                      label: "Running test suite inside container…" },
+    { after: Math.round(est * 0.35),  label: "Parsing errors and generating fixes…" },
+    { after: Math.round(est * 0.60),  label: "Applying fixes and committing changes…" },
+    { after: Math.round(est * 0.78),  label: "Pushing branch to GitHub…" },
+    { after: Math.round(est * 0.88),  label: "Running sandbox verification…" },
+    { after: Math.round(est * 0.96),  label: "Scoring and cleaning up…" },
+  ];
+};
+
+const getLabelForElapsed = (stages, elapsed) => {
+  let label = stages[0].label;
+  for (const s of stages) {
     if (elapsed >= s.after) label = s.label;
   }
   return label;
+};
+
+// Build a log entry object.
+let _logSeq = 0;
+const mkLog = (level, message, source = "frontend") => ({
+  id: ++_logSeq,
+  ts: new Date().toISOString(),
+  level,   // "info" | "success" | "warn" | "error"
+  source,
+  message,
+});
+
+// Convert a backend cicd-timeline event into a log entry.
+const timelineEventToLog = (ev, idx) => {
+  const stage = ev?.stage ?? "";
+  const status = ev?.status ?? "";
+  const details = ev?.details ?? {};
+  const ts = ev?.timestamp ?? new Date().toISOString();
+
+  const SUCCESS_STATUSES = new Set([
+    "started", "repo_ready", "tests_passed", "branch_pushed",
+    "sandbox_verification", "finished", "fixes_applied", "patches_generated",
+    "commit_attempted", "interim_push",
+  ]);
+  const WARN_STATUSES = new Set([
+    "no_fixes_applied", "no_parseable_errors", "retry_scheduled",
+    "skipped", "timeout",
+  ]);
+  const ERROR_STATUSES = new Set([
+    "clone_failed", "tests_failed", "sandbox_verification_failed",
+  ]);
+
+  let level = "info";
+  if (SUCCESS_STATUSES.has(status)) level = "success";
+  else if (WARN_STATUSES.has(status)) level = "warn";
+  else if (ERROR_STATUSES.has(status)) level = "error";
+
+  const detailStr = Object.keys(details).length
+    ? " " + Object.entries(details)
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .join(" ")
+    : "";
+
+  return {
+    id: `tl-${idx}`,
+    ts,
+    level,
+    source: stage,
+    message: `[${stage}] ${status}${detailStr}`,
+  };
 };
 
 export const useAgentStore = create((set, get) => ({
   form: { ...initialForm },
   loading: false,
   elapsedSeconds: 0,
+  estimatedTotalSeconds: 510, // updated at run start based on retry_limit
   loadingStage: "",
   error: "",
   results: null,
   runHistory: [],
   showErrorLog: false,
   errorLog: "",
+  liveLogs: [],           // [{id, ts, level, source, message}]
 
   setFormField: (field, value) =>
     set((state) => ({ form: { ...state.form, [field]: value } })),
@@ -199,24 +261,62 @@ export const useAgentStore = create((set, get) => ({
       clearInterval(_timerInterval);
       _timerInterval = null;
     }
-    set({ loading: false, elapsedSeconds: 0, loadingStage: "", error: "Run cancelled by user." });
+    set((s) => ({
+      loading: false,
+      elapsedSeconds: 0,
+      loadingStage: "",
+      error: "Run cancelled by user.",
+      liveLogs: [
+        ...s.liveLogs,
+        mkLog("warn", "Run cancelled by user."),
+      ],
+    }));
   },
 
   runAgent: async () => {
     const { form } = get();
+    const retryLimit = safeNumber(form.retry_limit, 5);
+    const dynamicStages = buildLoadingStages(retryLimit);
+    const estimatedTotal = estimateRunSeconds(retryLimit);
 
     // Cancel any previous in-flight request
     if (_abortController) _abortController.abort();
     _abortController = new AbortController();
     const signal = _abortController.signal;
 
-    // Start elapsed timer
+    // Reset logs and start timer
     if (_timerInterval) clearInterval(_timerInterval);
     let elapsed = 0;
-    set({ loading: true, error: "", errorLog: "", elapsedSeconds: 0, loadingStage: getLoadingStage(0) });
+    let lastLabel = dynamicStages[0].label;
+
+    set({
+      loading: true,
+      error: "",
+      errorLog: "",
+      elapsedSeconds: 0,
+      estimatedTotalSeconds: estimatedTotal,
+      loadingStage: lastLabel,
+      liveLogs: [
+        mkLog("info", `Run started — repo: ${form.repo_url.trim()}`),
+        mkLog("info", `Team: ${form.team_name.trim()} / Leader: ${form.leader_name.trim()}`),
+        mkLog("info", `Retry limit: ${retryLimit}  |  Estimated runtime: ~${estimatedTotal}s`),
+        mkLog("info", lastLabel),
+      ],
+    });
+
     _timerInterval = setInterval(() => {
       elapsed += 1;
-      set({ elapsedSeconds: elapsed, loadingStage: getLoadingStage(elapsed) });
+      const newLabel = getLabelForElapsed(dynamicStages, elapsed);
+      const labelChanged = newLabel !== lastLabel;
+      lastLabel = newLabel;
+      set((s) => ({
+        elapsedSeconds: elapsed,
+        loadingStage: newLabel,
+        // Append a log entry only when the stage label changes
+        liveLogs: labelChanged
+          ? [...s.liveLogs, mkLog("info", newLabel)]
+          : s.liveLogs,
+      }));
     }, 1000);
 
     // Hard 15-minute timeout
@@ -231,6 +331,8 @@ export const useAgentStore = create((set, get) => ({
     };
 
     try {
+      set((s) => ({ liveLogs: [...s.liveLogs, mkLog("info", "POST /run → sending request to backend…")] }));
+
       const postResponse = await fetch(`${API_BASE}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -239,7 +341,7 @@ export const useAgentStore = create((set, get) => ({
           repo_url: form.repo_url.trim(),
           team_name: form.team_name.trim(),
           leader_name: form.leader_name.trim(),
-          retry_limit: safeNumber(form.retry_limit, 5),
+          retry_limit: retryLimit,
         }),
       });
 
@@ -248,31 +350,60 @@ export const useAgentStore = create((set, get) => ({
         throw new Error(failure?.detail || `Server error ${postResponse.status}`);
       }
 
+      set((s) => ({ liveLogs: [...s.liveLogs, mkLog("success", `POST /run → ${postResponse.status} OK — pipeline finished`)] }));
+
       const postData = await postResponse.json();
 
+      set((s) => ({ liveLogs: [...s.liveLogs, mkLog("info", "GET /results → fetching final results…")] }));
       const getResponse = await fetch(`${API_BASE}/results`, { signal });
       const getData = getResponse.ok ? await getResponse.json() : postData;
 
       stopTimer();
-      set({
-        results: normalizeResult(getData, safeNumber(form.retry_limit, 5)),
+
+      // Build real timeline log entries from backend cicd timeline
+      const rawTimeline = Array.isArray(getData?.["cicd timeline"])
+        ? getData["cicd timeline"]
+        : [];
+      const timelineLogs = rawTimeline.map(timelineEventToLog);
+      const finalStatus = getData?.final_status ?? "FAILED";
+      const score = getData?.score_breakdown?.final ?? getData?.score ?? 0;
+
+      set((s) => ({
+        results: normalizeResult(getData, retryLimit),
         loading: false,
         elapsedSeconds: elapsed,
         loadingStage: "",
-      });
+        liveLogs: [
+          ...s.liveLogs,
+          mkLog("info", "─── Backend pipeline events ───────────────────────"),
+          ...timelineLogs,
+          mkLog("info", "───────────────────────────────────────────────────"),
+          mkLog(
+            finalStatus === "PASSED" ? "success" : finalStatus === "SANDBOX_FAILED" ? "warn" : "error",
+            `Run complete — status: ${finalStatus}  |  score: ${score}  |  elapsed: ${elapsed}s`,
+          ),
+        ],
+      }));
 
       get().loadRunHistory();
     } catch (err) {
       stopTimer();
+      const isTimeout = elapsed >= RUN_TIMEOUT_MS / 1000;
       const msg =
         err?.name === "AbortError"
-          ? elapsed >= RUN_TIMEOUT_MS / 1000
+          ? isTimeout
             ? "Request timed out after 15 minutes. The backend may still be running."
             : "Run cancelled by user."
           : err instanceof Error
           ? err.message
           : "Unexpected error occurred";
-      set({ loading: false, elapsedSeconds: 0, loadingStage: "", error: msg });
+      set((s) => ({
+        loading: false,
+        elapsedSeconds: 0,
+        loadingStage: "",
+        error: msg,
+        liveLogs: [...s.liveLogs, mkLog("error", `Run failed: ${msg}`)],
+      }));
     }
   },
 

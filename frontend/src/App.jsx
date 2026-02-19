@@ -9,6 +9,7 @@ const ScoreBreakdownPanel = lazy(() => import("./components/ScoreBreakdownPanel"
 const CICDTimeline = lazy(() => import("./components/CICDTimeline"));
 const FixesAppliedTable = lazy(() => import("./components/FixesAppliedTable"));
 const ProgressTracker = lazy(() => import("./components/ProgressTracker"));
+const LiveLogPanel = lazy(() => import("./components/LiveLogPanel"));
 
 const App = () => {
   const results = useAgentStore((state) => state.results);
@@ -51,6 +52,7 @@ const App = () => {
           }
         >
           <ProgressTracker results={results} />
+          <LiveLogPanel />
           <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
             <ScoreBreakdownPanel results={results} />
             <CICDTimeline results={results} />
