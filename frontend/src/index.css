@@ -1,0 +1,47 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Space Grotesk", sans-serif;
+  background: radial-gradient(circle at 20% 10%, #13264a 0%, transparent 35%),
+    radial-gradient(circle at 80% 0%, #30153a 0%, transparent 28%),
+    linear-gradient(160deg, #05070c 0%, #090d16 40%, #0b1220 100%);
+  color: #e2e8f0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.glass-panel {
+  background: linear-gradient(155deg, rgba(30, 41, 59, 0.45), rgba(10, 14, 22, 0.7));
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  backdrop-filter: blur(6px);
+}
+
+.section-title {
+  @apply text-sm uppercase tracking-[0.22em] text-slate-300/85;
+}
+
+.metric-tile {
+  @apply rounded-xl border border-slate-600/40 bg-slate-900/45 px-4 py-3;
+}
+
+.input-base {
+  @apply w-full rounded-xl border border-slate-600/40 bg-slate-900/50 px-4 py-3 text-slate-100 outline-none transition;
+}
+
+.input-base:focus {
+  border-color: rgba(96, 165, 250, 0.85);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+

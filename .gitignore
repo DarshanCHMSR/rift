@@ -3,3 +3,4 @@
 /backend/agents/agent_manager/__pycache__/
 /backend/myenv
 /backend/services/__pycache__/
+frontend/node_modules
