@@ -83,6 +83,7 @@ class SupervisorAgent:
         total_commits = 0
         total_fixes = 0
         final_status = "FAILED"
+        sandbox_verification: dict[str, Any] = {}
 
         self.cicd_monitor.record(timeline, "supervisor", "started", {"run_id": run_id})
 
@@ -102,6 +103,7 @@ class SupervisorAgent:
                 timeline, "cicd", "attempt_started", {"attempt": attempt}
             )
 
+            # Volume-mount test: fast; validates local fixes during the retry loop.
             test_result = self.test_runner_chain.invoke(
                 {"repo_path": repo_path, "framework": framework, "timeline": timeline}
             )
@@ -147,6 +149,18 @@ class SupervisorAgent:
             )
             if commit_hash:
                 total_commits += 1
+                # Push after every commit so the AI_Fix branch on GitHub stays
+                # current; this also allows the sandbox verification (below) to
+                # test the exact state that was committed.
+                interim_push = self.git_service.push_branch(
+                    repo_path=repo_path, branch_name=branch_name
+                )
+                self.cicd_monitor.record(
+                    timeline,
+                    "git",
+                    "interim_push",
+                    {"attempt": attempt, "result": interim_push},
+                )
 
             self.cicd_monitor.record(
                 timeline,
@@ -155,10 +169,39 @@ class SupervisorAgent:
                 {"attempt": attempt + 1},
             )
 
+        # Final push ensures the branch is up-to-date even if the last attempt
+        # passed on the first try (no commits → no interim push in that case).
         push_message = self.git_service.push_branch(repo_path=repo_path, branch_name=branch_name)
         self.cicd_monitor.record(
             timeline, "git", "branch_pushed", {"branch_name": branch_name, "result": push_message}
         )
+
+        # ----------------------------------------------------------------
+        # Sandbox verification — clone directly from GitHub inside a fresh
+        # container to confirm the pushed branch is genuinely clean.
+        # Only runs when the local tests passed and the branch was pushed.
+        # ----------------------------------------------------------------
+        if final_status == "PASSED" and "successful" in push_message.lower():
+            self.cicd_monitor.record(
+                timeline, "test_runner", "sandbox_verification_started", {}
+            )
+            sb_result = self.test_runner.run_sandbox(
+                repo_url=repo_url,
+                branch_name=branch_name,
+                framework=framework,
+                timeline=timeline,
+            )
+            sandbox_verification = {
+                "exit_code": sb_result["exit_code"],
+                "duration": sb_result["duration"],
+                "passed": sb_result["exit_code"] == 0,
+                "branch": branch_name,
+            }
+            if sb_result["exit_code"] != 0:
+                # Downgrade status: local tests passed but remote sandbox failed.
+                final_status = "SANDBOX_FAILED"
+        else:
+            sandbox_verification = {"skipped": True, "reason": push_message}
 
         time_taken = round(time.time() - start, 2)
         score = self.scoring_service.calculate_score(
@@ -180,6 +223,7 @@ class SupervisorAgent:
             "time_taken": time_taken,
             "score": score,
             "fixes": all_fixes,
+            "sandbox_verification": sandbox_verification,
             "cicd timeline": timeline,
         }
 
