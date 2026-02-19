@@ -147,9 +147,38 @@ const normalizeResult = (raw, retryLimit) => {
   };
 };
 
+// Module-level refs for non-reactive artefacts
+let _timerInterval = null;
+let _abortController = null;
+const RUN_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+// Pipeline stage messages shown while loading
+const LOADING_STAGES = [
+  { after: 0,   label: "Connecting to backend…" },
+  { after: 5,   label: "Cloning repository into workspace…" },
+  { after: 20,  label: "Detecting test framework…" },
+  { after: 30,  label: "Spinning up Docker sandbox…" },
+  { after: 50,  label: "Running test suite inside container…" },
+  { after: 90,  label: "Parsing errors and generating fixes…" },
+  { after: 150, label: "Applying fixes and committing changes…" },
+  { after: 240, label: "Pushing branch to GitHub…" },
+  { after: 300, label: "Running sandbox verification…" },
+  { after: 480, label: "Scoring and cleaning up…" },
+];
+
+const getLoadingStage = (elapsed) => {
+  let label = LOADING_STAGES[0].label;
+  for (const s of LOADING_STAGES) {
+    if (elapsed >= s.after) label = s.label;
+  }
+  return label;
+};
+
 export const useAgentStore = create((set, get) => ({
   form: { ...initialForm },
   loading: false,
+  elapsedSeconds: 0,
+  loadingStage: "",
   error: "",
   results: null,
   runHistory: [],
@@ -161,14 +190,51 @@ export const useAgentStore = create((set, get) => ({
 
   toggleErrorLog: () => set((s) => ({ showErrorLog: !s.showErrorLog })),
 
+  cancelRun: () => {
+    if (_abortController) {
+      _abortController.abort();
+      _abortController = null;
+    }
+    if (_timerInterval) {
+      clearInterval(_timerInterval);
+      _timerInterval = null;
+    }
+    set({ loading: false, elapsedSeconds: 0, loadingStage: "", error: "Run cancelled by user." });
+  },
+
   runAgent: async () => {
     const { form } = get();
-    set({ loading: true, error: "", errorLog: "" });
+
+    // Cancel any previous in-flight request
+    if (_abortController) _abortController.abort();
+    _abortController = new AbortController();
+    const signal = _abortController.signal;
+
+    // Start elapsed timer
+    if (_timerInterval) clearInterval(_timerInterval);
+    let elapsed = 0;
+    set({ loading: true, error: "", errorLog: "", elapsedSeconds: 0, loadingStage: getLoadingStage(0) });
+    _timerInterval = setInterval(() => {
+      elapsed += 1;
+      set({ elapsedSeconds: elapsed, loadingStage: getLoadingStage(elapsed) });
+    }, 1000);
+
+    // Hard 15-minute timeout
+    const timeoutId = setTimeout(() => {
+      if (_abortController) _abortController.abort();
+    }, RUN_TIMEOUT_MS);
+
+    const stopTimer = () => {
+      clearInterval(_timerInterval);
+      _timerInterval = null;
+      clearTimeout(timeoutId);
+    };
 
     try {
       const postResponse = await fetch(`${API_BASE}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal,
         body: JSON.stringify({
           repo_url: form.repo_url.trim(),
           team_name: form.team_name.trim(),
@@ -179,26 +245,34 @@ export const useAgentStore = create((set, get) => ({
 
       if (!postResponse.ok) {
         const failure = await postResponse.json().catch(() => ({}));
-        throw new Error(failure?.detail || "Failed to run healing workflow");
+        throw new Error(failure?.detail || `Server error ${postResponse.status}`);
       }
 
       const postData = await postResponse.json();
 
-      const getResponse = await fetch(`${API_BASE}/results`);
+      const getResponse = await fetch(`${API_BASE}/results`, { signal });
       const getData = getResponse.ok ? await getResponse.json() : postData;
 
+      stopTimer();
       set({
         results: normalizeResult(getData, safeNumber(form.retry_limit, 5)),
         loading: false,
+        elapsedSeconds: elapsed,
+        loadingStage: "",
       });
 
-      // Refresh run history
       get().loadRunHistory();
-    } catch (error) {
-      set({
-        loading: false,
-        error: error instanceof Error ? error.message : "Unexpected error occurred",
-      });
+    } catch (err) {
+      stopTimer();
+      const msg =
+        err?.name === "AbortError"
+          ? elapsed >= RUN_TIMEOUT_MS / 1000
+            ? "Request timed out after 15 minutes. The backend may still be running."
+            : "Run cancelled by user."
+          : err instanceof Error
+          ? err.message
+          : "Unexpected error occurred";
+      set({ loading: false, elapsedSeconds: 0, loadingStage: "", error: msg });
     }
   },
 

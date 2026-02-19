@@ -1,11 +1,19 @@
 import { useMemo } from "react";
 import { useAgentStore } from "../store/useAgentStore";
 
+const fmtElapsed = (s) => {
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+};
+
 const InputSection = () => {
   const form = useAgentStore((state) => state.form);
   const loading = useAgentStore((state) => state.loading);
+  const elapsedSeconds = useAgentStore((state) => state.elapsedSeconds);
+  const loadingStage = useAgentStore((state) => state.loadingStage);
   const setFormField = useAgentStore((state) => state.setFormField);
   const runAgent = useAgentStore((state) => state.runAgent);
+  const cancelRun = useAgentStore((state) => state.cancelRun);
   const error = useAgentStore((state) => state.error);
 
   const canRun = useMemo(() => {
@@ -85,7 +93,7 @@ const InputSection = () => {
           />
         </label>
 
-        <div className="flex items-end">
+        <div className="flex items-end gap-2">
           <button
             type="submit"
             disabled={!canRun}
@@ -94,18 +102,38 @@ const InputSection = () => {
             {loading ? (
               <span className="inline-flex items-center gap-2">
                 <span className="inline-block h-4 w-4 animate-spinSlow rounded-full border-2 border-cyan-200 border-t-transparent" />
-                Processing...
+                Processing… {elapsedSeconds > 0 && (
+                  <span className="font-mono text-xs opacity-80">{fmtElapsed(elapsedSeconds)}</span>
+                )}
               </span>
             ) : (
               "Run Agent"
             )}
           </button>
+          {loading && (
+            <button
+              type="button"
+              onClick={cancelRun}
+              className="inline-flex h-12 shrink-0 items-center justify-center rounded-xl border border-rose-400/40 bg-rose-500/15 px-4 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/25"
+            >
+              Cancel
+            </button>
+          )}
         </div>
       </form>
 
       {loading && (
-        <div className="mt-4 animate-pulse rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
-          Executing multi-agent workflow, applying fixes, and monitoring CI/CD retries...
+        <div className="mt-4 rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <span className="animate-pulse text-sm text-cyan-100">{loadingStage}</span>
+            <span className="shrink-0 font-mono text-xs text-cyan-300/70">{fmtElapsed(elapsedSeconds)}</span>
+          </div>
+          <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-cyan-900/40">
+            <div
+              className="h-full rounded-full bg-cyan-400/60 transition-all duration-1000"
+              style={{ width: `${Math.min(100, (elapsedSeconds / 600) * 100)}%` }}
+            />
+          </div>
         </div>
       )}
       {error && (
