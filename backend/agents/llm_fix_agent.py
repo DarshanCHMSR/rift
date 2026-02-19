@@ -8,12 +8,16 @@ agent reverts the change automatically.
 from __future__ import annotations
 
 import json
+import logging
+import re
 import textwrap
 from pathlib import Path
 from typing import Any
 
 from backend.agents.cicd_monitor import CICDMonitorAgent
 from backend.services.gemini_service import build_gemini_service
+
+logger = logging.getLogger("rift.llm_fix_agent")
 
 _MAX_CONTEXT_CHARS = 6_000
 
@@ -56,14 +60,26 @@ def _build_structured_prompt(
     """)
 
 
-def _strip_fences(text: str) -> str:
+def _extract_json(text: str) -> str:
+    """Extract the first JSON object from Gemini output, handling fences robustly."""
+    # 1) Try regex: find the outermost {...} block (handles extra prose around it)
+    match = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", text, re.DOTALL)
+    if match:
+        return match.group(0)
+    # 2) Fallback: strip markdown fences line-by-line
     lines = text.splitlines()
     start, end = 0, len(lines)
     if lines and lines[0].strip().startswith("```"):
         start = 1
-    if lines and lines[-1].strip() == "```":
-        end -= 1
+    for i in range(len(lines) - 1, start - 1, -1):
+        if lines[i].strip() == "```":
+            end = i
+            break
     return "\n".join(lines[start:end])
+
+
+# Keep old name as alias for any external callers
+_strip_fences = _extract_json
 
 
 class LLMFixAgent:
@@ -115,9 +131,20 @@ class LLMFixAgent:
             genai.configure(api_key=self._gemini._api_key)
             model = genai.GenerativeModel("gemini-1.5-flash")
             response = model.generate_content(prompt)
-            raw: str = _strip_fences(response.text.strip())  # type: ignore[attr-defined]
+            raw: str = _extract_json(response.text.strip())  # type: ignore[attr-defined]
+            logger.debug("Gemini raw response (first 300 chars): %s", raw[:300])
             patch = json.loads(raw)
-        except Exception:
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "LLM fix agent: Gemini returned non-JSON for %s:%d — %s",
+                file_hint, line_no, exc,
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "LLM fix agent: Gemini call failed for %s:%d — %s: %s",
+                file_hint, line_no, type(exc).__name__, exc,
+            )
             return None
 
         # Validate patch structure

@@ -49,6 +49,18 @@ def test_zero_fix_bonus():
     assert result["final"] == 105
 
 
+def test_zero_fix_bonus_not_awarded_on_failed():
+    """zero_fix_bonus must not be awarded when the run FAILED (unfixed tests)."""
+    result = svc.calculate_score(
+        elapsed_seconds=60, commit_count=0, total_fixes=0,
+        sandbox_passed=None, final_status="FAILED",
+    )
+    assert result["zero_fix_bonus"] == 0
+    # Should still get speed bonus but not the zero-fix bonus
+    assert result["speed_bonus"] == 10
+    assert result["final"] == 110
+
+
 def test_cap_at_120():
     # speed + zero_fix should still cap at 120
     result = svc.calculate_score(

@@ -38,16 +38,20 @@ class FixGeneratorAgent:
                 description = self._fix_indentation(file_path)
             elif bug_type == "IMPORT":
                 description = self._fix_import(repo_path, file_path, line_no, message)
-            elif bug_type in ("TYPE_ERROR", "LOGIC") and file_path:
+            elif bug_type in ("TYPE_ERROR", "LOGIC", "ASSERTION", "REFERENCE") and file_path:
                 # ── Gemini LLM repair path ─────────────────────────────────
-                description = self._gemini.repair_file(
+                raw_desc = self._gemini.repair_file(
                     file_path=file_path,
                     line_no=line_no,
                     error_type=bug_type,
                     error_message=message,
                 )
-                if description:
+                # repair_file returns "Gemini unavailable: ..." on API errors
+                if raw_desc and not raw_desc.lower().startswith("gemini unavailable"):
+                    description = raw_desc
                     gemini_calls += 1
+                else:
+                    description = None
             else:
                 description = None
 

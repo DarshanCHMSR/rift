@@ -293,6 +293,11 @@ class SupervisorAgent:
         validation = self.validate_pipeline_execution(final_state)
 
         # ── Build backward-compatible response ──
+        # Include last 3 KB of test output so failures are debuggable without
+        # access to the (already-cleaned) container logs.
+        raw_output: str = final_state.get("test_output", "")
+        last_test_output = raw_output[-3000:] if raw_output else ""
+
         return {
             "repo_url": final_state.get("repo_url", ""),
             "team_name": final_state.get("team_name", ""),
@@ -307,7 +312,8 @@ class SupervisorAgent:
             "fixes": final_state.get("all_fixes", []),
             "sandbox_verification": final_state.get("sandbox_verification", {}),
             "cicd timeline": final_state.get("timeline", []),
-            # New — additive fields, frontend ignores unknown keys
+            # Debugging helpers — frontend ignores unknown keys
+            "last_test_output": last_test_output,
             "audit_file": audit_path.name if audit_path else None,
             "pipeline_validation": validation,
         }
@@ -676,13 +682,24 @@ class SupervisorAgent:
                 "container_ids": container_ids,
             }
 
-        # Sandbox skipped
-        reason = push_msg if final_status == "PASSED" else final_status
+        # Sandbox skipped — explain why clearly
+        if final_status != "PASSED":
+            reason = (
+                f"{final_status}: tests did not pass after all retry attempts — "
+                "no verified fixes to deploy; sandbox verification skipped"
+            )
+        else:
+            reason = f"Push did not succeed ({push_msg!r}) — sandbox skipped"
         sandbox_verification = {"skipped": True, "reason": reason}
-        logger.info("NODE_END: sandbox  (skipped — %s)", reason)
+        logger.info("NODE_END: sandbox  (skipped — %s)", final_status)
         return {
             "sandbox_verification": sandbox_verification,
-            "timeline": local_tl,
+            "timeline": [
+                _event("cicd", "sandbox_skipped", {
+                    "reason": final_status,
+                    "detail": "Sandbox only runs when tests pass after AI fixes",
+                }),
+            ],
             "nodes_executed": ["sandbox"],
         }
 
@@ -700,6 +717,7 @@ class SupervisorAgent:
             commit_count=state.get("total_commits", 0),
             sandbox_passed=sb_passed,
             total_fixes=state.get("total_fixes_count", 0),
+            final_status=state.get("final_status", "FAILED"),
         )
 
         logger.info("NODE_END: score  final=%d", score["final"])
@@ -879,6 +897,19 @@ class SupervisorAgent:
                     lines.append(f"{i}. {fix}")
             else:
                 lines.append("- No fixes applied")
+
+            # ── Last test output (truncated for readability) ──
+            raw_output = state.get("test_output", "")
+            if raw_output:
+                snippet = raw_output[-2000:]
+                lines += [
+                    "",
+                    "## Last Test Output (tail)",
+                    "",
+                    "```",
+                    snippet,
+                    "```",
+                ]
 
             lines += ["", "## Score Breakdown", ""]
             score = state.get("score", {})
